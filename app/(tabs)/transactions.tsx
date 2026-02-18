@@ -1,12 +1,13 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
-  Alert, ActivityIndicator, TextInput, StatusBar,
+  ActivityIndicator, TextInput, StatusBar, Animated, Modal,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getTransactions, deleteTransaction } from '../../services/api';
 import { T } from '../../constants/theme';
+import Toast from '../../components/Toast';
 
 const CAT_ICONS: Record<string, string> = {
   Food: '🍜', Transport: '🚗', Shopping: '🛍', Bills: '📄',
@@ -16,6 +17,54 @@ const CAT_ICONS: Record<string, string> = {
 
 type Filter = 'all' | 'income' | 'expense';
 
+// ── Custom Delete Confirm Modal ───────────────────────────────────────────────
+function DeleteModal({ visible, onCancel, onConfirm }: {
+  visible: boolean; onCancel: () => void; onConfirm: () => void;
+}) {
+  const scaleAnim = useRef(new Animated.Value(0.8)).current;
+  const opacityAnim = useRef(new Animated.Value(0)).current;
+
+  React.useEffect(() => {
+    if (visible) {
+      Animated.parallel([
+        Animated.spring(scaleAnim,   { toValue: 1,   useNativeDriver: true, speed: 20, bounciness: 12 }),
+        Animated.timing(opacityAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+      ]).start();
+    } else {
+      Animated.parallel([
+        Animated.timing(scaleAnim,   { toValue: 0.8, duration: 150, useNativeDriver: true }),
+        Animated.timing(opacityAnim, { toValue: 0,   duration: 150, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [visible]);
+
+  return (
+    <Modal transparent visible={visible} animationType="none" onRequestClose={onCancel}>
+      <View style={modal.overlay}>
+        <Animated.View style={[modal.card, { opacity: opacityAnim, transform: [{ scale: scaleAnim }] }]}>
+          {/* Icon */}
+          <View style={modal.iconWrap}>
+            <Text style={modal.iconEmoji}>🗑</Text>
+          </View>
+          <Text style={modal.title}>Delete Transaction</Text>
+          <Text style={modal.subtitle}>This action cannot be undone.</Text>
+
+          {/* Buttons */}
+          <View style={modal.btnRow}>
+            <TouchableOpacity style={modal.cancelBtn} onPress={onCancel} activeOpacity={0.8}>
+              <Text style={modal.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={modal.deleteBtn} onPress={onConfirm} activeOpacity={0.8}>
+              <Text style={modal.deleteText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
+// ── Main Screen ───────────────────────────────────────────────────────────────
 export default function TransactionsScreen() {
   const router = useRouter();
   const [transactions, setTransactions] = useState<any[]>([]);
@@ -24,6 +73,8 @@ export default function TransactionsScreen() {
   const [search, setSearch]             = useState('');
   const [filterType, setFilterType]     = useState<Filter>('all');
   const [currency, setCurrency]         = useState('₹');
+  const [deleteId, setDeleteId]         = useState<string | null>(null);
+  const [toast, setToast]               = useState({ visible: false, message: '', type: 'success' as 'success' | 'delete' | 'error' });
 
   useFocusEffect(useCallback(() => { load(); }, []));
 
@@ -34,7 +85,7 @@ export default function TransactionsScreen() {
       const res = await getTransactions();
       setTransactions(res.data);
       applyFilter(res.data, filterType, search);
-    } catch { Alert.alert('Error', 'Failed to load transactions'); }
+    } catch { }
     finally { setLoading(false); }
   };
 
@@ -50,35 +101,45 @@ export default function TransactionsScreen() {
   const handleSearch = (text: string) => { setSearch(text); applyFilter(transactions, filterType, text); };
   const handleFilter = (type: Filter) => { setFilterType(type); applyFilter(transactions, type, search); };
 
-  const handleDelete = (id: string) => {
-    Alert.alert('Delete', 'Remove this transaction?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-        try {
-          await deleteTransaction(id);
-          const updated = transactions.filter(t => t._id !== id);
-          setTransactions(updated);
-          applyFilter(updated, filterType, search);
-        } catch { Alert.alert('Error', 'Failed to delete'); }
-      }},
-    ]);
+  const confirmDelete = async () => {
+    if (!deleteId) return;
+    try {
+      await deleteTransaction(deleteId);
+      const updated = transactions.filter(t => t._id !== deleteId);
+      setTransactions(updated);
+      applyFilter(updated, filterType, search);
+      setDeleteId(null);
+      setToast({ visible: true, message: 'Transaction removed', type: 'delete' });
+    } catch {
+      setDeleteId(null);
+      setToast({ visible: true, message: 'Failed to delete', type: 'error' });
+    }
   };
 
   const totalIncome  = filtered.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0);
   const totalExpense = filtered.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0);
 
-  if (loading) return <View style={styles.loadingScreen}><ActivityIndicator size="large" color={T.teal} /></View>;
+  if (loading) return (
+    <View style={styles.loadingScreen}>
+      <ActivityIndicator size="large" color={T.teal} />
+    </View>
+  );
 
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor={T.bg} />
+
+      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <Text style={styles.headerTitle}>Transactions</Text>
-          <TouchableOpacity style={styles.addBtn} onPress={() => router.push({ pathname: '/(tabs)/add', params: { type: 'expense' } })}>
+          <TouchableOpacity style={styles.addBtn}
+            onPress={() => router.push({ pathname: '/(tabs)/add', params: { type: 'expense' } })}>
             <Text style={styles.addBtnText}>＋</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Summary pills */}
         <View style={styles.summaryRow}>
           <View style={[styles.summaryPill, { borderColor: T.income + '40' }]}>
             <Text style={styles.summaryPillLabel}>In</Text>
@@ -95,18 +156,31 @@ export default function TransactionsScreen() {
             </Text>
           </View>
         </View>
+
+        {/* Search */}
         <View style={styles.searchWrap}>
           <Text style={styles.searchIcon}>🔍</Text>
-          <TextInput style={styles.searchInput} placeholder="Search transactions..." placeholderTextColor={T.textMuted}
-            value={search} onChangeText={handleSearch} />
-          {search.length > 0 && <TouchableOpacity onPress={() => handleSearch('')}><Text style={styles.clearBtn}>✕</Text></TouchableOpacity>}
+          <TextInput style={styles.searchInput} placeholder="Search transactions..."
+            placeholderTextColor={T.textMuted} value={search} onChangeText={handleSearch} />
+          {search.length > 0 && (
+            <TouchableOpacity onPress={() => handleSearch('')}>
+              <Text style={styles.clearBtn}>✕</Text>
+            </TouchableOpacity>
+          )}
         </View>
+
+        {/* Filter tabs */}
         <View style={styles.filterRow}>
           {(['all', 'income', 'expense'] as Filter[]).map(f => (
             <TouchableOpacity key={f}
-              style={[styles.filterBtn, filterType === f && { backgroundColor: f === 'income' ? T.incomeGlow : f === 'expense' ? T.expenseGlow : T.tealGlow, borderColor: f === 'income' ? T.income : f === 'expense' ? T.expense : T.teal }]}
+              style={[styles.filterBtn, filterType === f && {
+                backgroundColor: f === 'income' ? T.incomeGlow : f === 'expense' ? T.expenseGlow : T.tealGlow,
+                borderColor: f === 'income' ? T.income : f === 'expense' ? T.expense : T.teal,
+              }]}
               onPress={() => handleFilter(f)}>
-              <Text style={[styles.filterTxt, filterType === f && { color: f === 'income' ? T.income : f === 'expense' ? T.expense : T.teal }]}>
+              <Text style={[styles.filterTxt, filterType === f && {
+                color: f === 'income' ? T.income : f === 'expense' ? T.expense : T.teal,
+              }]}>
                 {f === 'all' ? 'All' : f === 'income' ? '↑ Income' : '↓ Expense'}
               </Text>
             </TouchableOpacity>
@@ -114,6 +188,7 @@ export default function TransactionsScreen() {
         </View>
       </View>
 
+      {/* List */}
       <FlatList
         data={filtered}
         keyExtractor={item => item._id}
@@ -135,18 +210,39 @@ export default function TransactionsScreen() {
             </View>
             <View style={styles.txMiddle}>
               <Text style={styles.txTitle}>{item.title}</Text>
-              <Text style={styles.txMeta}>{item.category} · {new Date(item.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}</Text>
+              <Text style={styles.txMeta}>
+                {item.category} · {new Date(item.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}
+              </Text>
             </View>
             <View style={styles.txRight}>
               <Text style={[styles.txAmt, { color: item.type === 'income' ? T.income : T.expense }]}>
                 {item.type === 'income' ? '+' : '-'}{currency}{item.amount.toLocaleString('en-IN')}
               </Text>
-              <TouchableOpacity onPress={() => handleDelete(item._id)} style={styles.deleteBtn} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              {/* ✅ Opens custom modal instead of Alert */}
+              <TouchableOpacity
+                onPress={() => setDeleteId(item._id)}
+                style={styles.deleteBtn}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                 <Text style={styles.deleteIcon}>🗑</Text>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
         )}
+      />
+
+      {/* Custom delete modal */}
+      <DeleteModal
+        visible={!!deleteId}
+        onCancel={() => setDeleteId(null)}
+        onConfirm={confirmDelete}
+      />
+
+      {/* Toast */}
+      <Toast
+        visible={toast.visible}
+        message={toast.message}
+        type={toast.type}
+        onHide={() => setToast(t => ({ ...t, visible: false }))}
       />
     </View>
   );
@@ -186,4 +282,41 @@ const styles = StyleSheet.create({
   emptyEmoji: { fontSize: 52, marginBottom: 14 },
   emptyTitle: { fontSize: 18, fontWeight: '700', color: T.textPrimary, marginBottom: 6 },
   emptySub: { fontSize: 13, color: T.textSecondary, textAlign: 'center' },
+});
+
+// ── Delete Modal Styles ───────────────────────────────────────────────────────
+const modal = StyleSheet.create({
+  overlay: {
+    flex: 1, justifyContent: 'center', alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.7)',
+  },
+  card: {
+    backgroundColor: T.bgCard, borderRadius: T.radiusLg,
+    padding: 28, width: 300, alignItems: 'center',
+    borderWidth: 1, borderColor: T.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.5, shadowRadius: 20, elevation: 20,
+  },
+  iconWrap: {
+    width: 64, height: 64, borderRadius: 32,
+    backgroundColor: T.expenseGlow, justifyContent: 'center',
+    alignItems: 'center', marginBottom: 16,
+    borderWidth: 1, borderColor: T.expense + '40',
+  },
+  iconEmoji: { fontSize: 28 },
+  title:    { fontSize: 18, fontWeight: '800', color: T.textPrimary, marginBottom: 8 },
+  subtitle: { fontSize: 13, color: T.textSecondary, textAlign: 'center', marginBottom: 24 },
+  btnRow:   { flexDirection: 'row', gap: 12, width: '100%' },
+  cancelBtn: {
+    flex: 1, paddingVertical: 14, borderRadius: T.radius,
+    alignItems: 'center', backgroundColor: T.bgElevated,
+    borderWidth: 1, borderColor: T.border,
+  },
+  cancelText: { color: T.textSecondary, fontWeight: '700', fontSize: 15 },
+  deleteBtn: {
+    flex: 1, paddingVertical: 14, borderRadius: T.radius,
+    alignItems: 'center', backgroundColor: T.expenseGlow,
+    borderWidth: 1, borderColor: T.expense + '60',
+  },
+  deleteText: { color: T.expense, fontWeight: '800', fontSize: 15 },
 });

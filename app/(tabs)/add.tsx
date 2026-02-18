@@ -8,6 +8,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { addTransaction, updateTransaction, getCategories } from '../../services/api';
 import { T } from '../../constants/theme';
+import Toast from '@/components/Toast';
+
 
 const DEFAULT_EXPENSE = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Health', 'Other'];
 const DEFAULT_INCOME  = ['Salary', 'Freelance', 'Investment', 'Gift', 'Other'];
@@ -29,6 +31,12 @@ export default function AddScreen() {
   const [loading, setLoading]       = useState(false);
   const [currency, setCurrency]     = useState('₹');
   const [autoTitle, setAutoTitle]   = useState(true);
+  const [toast, setToast] = useState<{ visible: boolean; message: string; type: 'success' | 'delete' | 'error' }>({
+  visible: false, message: '', type: 'success'
+});
+const showToast = (message: string, type: 'success' | 'delete' | 'error' = 'success') => {
+  setToast({ visible: true, message, type });
+};
 
   useEffect(() => { loadCurrency(); }, []);
   useEffect(() => { if (params.type) setType(params.type as any); }, [params.type]);
@@ -61,19 +69,18 @@ export default function AddScreen() {
                            return Alert.alert('Missing', 'Enter a valid amount');
     if (!category)         return Alert.alert('Missing', 'Select a category');
     setLoading(true);
-    try {
-      const data = { title: title.trim(), amount: Number(amount), type, category, notes: notes.trim() };
-      if (params.editId) {
-        await updateTransaction(params.editId, data);
-        Alert.alert('✅ Updated', 'Transaction updated!');
-      } else {
-        await addTransaction(data);
-        Alert.alert('✅ Saved', 'Transaction added!');
-      }
-      router.back();
-    } catch (error: any) {
-      Alert.alert('Error', error.response?.data?.error || 'Failed to save');
-    } finally { setLoading(false); }
+   try {
+  const data = { title: title.trim(), amount: Number(amount), type, category, notes: notes.trim() };
+  if (params.editId) {
+    await updateTransaction(params.editId, data);
+  } else {
+    await addTransaction(data);
+  }
+  showToast(params.editId ? 'Transaction updated!' : 'Transaction saved! 💰', 'success');
+  setTimeout(() => router.back(), 800);
+} catch (error: any) {
+  showToast(error.response?.data?.error || 'Failed to save', 'error');
+}
   };
 
   const isIncome   = type === 'income';
@@ -141,6 +148,7 @@ export default function AddScreen() {
           <View style={styles.section}>
             <View style={styles.labelRow}>
               <Text style={styles.sectionLabel}>TITLE</Text>
+
             </View>
             <TextInput
               style={styles.input}
